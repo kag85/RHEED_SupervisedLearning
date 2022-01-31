@@ -1,0 +1,300 @@
+---
+title: "SRO using entire data frame"
+author: "Kim"
+date: "5/28/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+First load in the necessary packages
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(caret)
+library(MASS)
+```
+```{r}
+
+forOSF <- read.csv("s:/ecg-members/Gliebe/Data/SRO/CombineRun20190715.115618MovieInt.csv")
+head(forOSF)
+```
+
+Read in your csv file that contains the lengths, widths, and intensities of all
+of your samples. When this file is saved, a "X" may be added to number the 
+rows.  We remove this as to not affect the results.
+```{r}
+
+SRO <- read.csv("s:/ecg-members/Gliebe/Data/allSRO.csv")
+table(SRO$sample)
+SRO <- SRO %>%
+  dplyr::select(-X)
+head(SRO)
+```
+
+Below we are normalizing the data. You can choose what parameters to have
+normalized.  These are listed above the comment line that says "list parameters
+for normalization above"
+```{r}
+matTable <- SRO %>%
+  dplyr::select(sample, mat) %>%
+  dplyr::distinct()
+
+library(caret)
+data4 <- data.frame()
+for (i in 2:dim(matTable)[1]) {
+  #i <- 1
+  samplename <- as.character(matTable$sample[i])
+  dataNorm <- SRO %>% 
+    dplyr::filter(sample == samplename) #%>%
+  dataNorm <- dataNorm %>%
+    dplyr::select(frame, Xwidth, widthsy)
+  #list parameters for normalization above
+  procData <- preProcess(dataNorm, method = "range")
+  dataNorm <- predict(procData, dataNorm)
+  data2 <- SRO %>%
+    filter(sample == matTable[i,1]) %>%
+    dplyr::select(-frame, -Xwidth, -widthsy)
+  data3 <- cbind(data2, dataNorm)
+  #data4 <- data3
+  data4 <- rbind(data4, data3)
+}
+
+summary(data4)
+
+
+```
+
+Now all the data is normalized, let's split it into testing and training (without needing to keep frames of the same samples together).
+
+```{r}
+library(rsample)
+set.seed(13)
+split <- initial_split(data4, .6)
+train <- training(split)
+test <- testing(split)
+#write.csv(train, "s:/ecg-members/Gliebe/Data/SROtrainFullDataNorm.csv")
+#write.csv(test, "s:/ecg-members/Gliebe/Data/SROtestFullDataNorm.csv")
+```
+
+Linear Discriminant Analysis (LDA):
+
+```{r}
+test <- read.csv("s:/ecg-members/Gliebe/Data/dftesttime1trial20200505SROnormFrame.csv")
+train <- read.csv("s:/ecg-members/Gliebe/Data/dftraintime1trial20200505SROnormFrame.csv")
+test <- test %>% dplyr::select(-X)
+train <- train %>% dplyr::select(-X)
+library(MASS)
+#str(train)  #result is a factor already
+dfModelTrain <- train %>%
+  dplyr::select(-sample) 
+set.seed(4)
+lda.fitmaxLtrain = lda(result∼intercept+ns1+ns2+ns3+ns4 , data = dfModelTrain)
+#saveRDS(lda.fitmaxLtrain, "../Data/RawNormalizedSRO/ldaModel.rds")
+predictedLDA <- predict(lda.fitmaxLtrain, dfModelTrain, type = "class")
+dfModelTrain$answer <- predictedLDA$class
+confTrain <- confusionMatrix(as.factor(dfModelTrain$answer), as.factor(dfModelTrain$result))
+print(confTrain)
+dftestModel <- test %>%
+  dplyr::select(-sample)
+predictedTestLDA <- predict(lda.fitmaxLtrain, dftestModel, type = "class")
+dftestModel$answer <- predictedTestLDA$class
+confTest <- confusionMatrix(as.factor(dftestModel$answer), as.factor(dftestModel$result))
+print(confTest)
+#summary(lda.fitmaxLtrain)
+#lda.fitmaxLtrain
+#plot(lda.fitmaxLtrain)
+```
+
+
+Support vector machine (SVM):
+```{r}
+library(e1071)
+
+dftrainFrame <- train %>%
+  dplyr::select(-sample)
+dftrainFrame$result <- as.character(dftrainFrame$result)
+dftrainFrame$result[dftrainFrame$result == "yes"] <- 1.0
+dftrainFrame$result[dftrainFrame$result == "no"] <- 2.0
+
+set.seed(5)
+svm.fitframetrain = svm(as.factor(result)~intercept+ns1+ns2+ns3+ns4 , data = dftrainFrame)
+#saveRDS(svm.fitframetrain, "../Data/RawNormalizedSRO/svmModel.rds")
+
+predictedsvmtrainFrame <- predict(svm.fitframetrain, dftrainFrame)
+dftrainFrame$answer <- predictedsvmtrainFrame
+
+confusionMatrix(as.factor(dftrainFrame$answer), as.factor(dftrainFrame$result))
+
+dftestFrameModel <- test  %>%
+  dplyr::select(-sample)
+dftestFrameModel$result <- as.character(dftestFrameModel$result)
+dftestFrameModel$result[dftestFrameModel$result == "yes"] <- 1
+dftestFrameModel$result[dftestFrameModel$result == "no"] <- 2
+
+dftestFrameModel$result <- as.factor(dftestFrameModel$result)
+predictedTestframeSVM <- predict(svm.fitframetrain, dftestFrameModel)
+dftestFrameModel$answer <- predictedTestframeSVM
+confusionMatrix(as.factor(dftestFrameModel$answer), as.factor(dftestFrameModel$result))
+svm.fitframetrain
+plot(svm.fitframetrain)
+```
+
+Quadratic discriminant analysis (QDA):
+```{r}
+
+dftrainFrame <- train %>%
+  dplyr::select(-sample, -X)
+dftrainFrame$intercept <- as.numeric(dftrainFrame$intercept)
+dftrainFrame$ns1 <- as.numeric(dftrainFrame$ns1)
+dftrainFrame$ns2 <- as.numeric(dftrainFrame$ns2)
+dftrainFrame$ns3 <- as.numeric(dftrainFrame$ns3)
+dftrainFrame$ns4 <- as.numeric(dftrainFrame$ns4)
+dftrainFrame$ns5 <- as.numeric(dftrainFrame$ns5)
+dftrainFrame$result <- as.numeric(dftrainFrame$result)
+set.seed(5)
+qda.fit=qda(result∼intercept+ns1+ns2+ns3+ns4 ,data=dftrainFrame)
+#qda.fit=qda(as.numeric(result) ~ ., data = dftrainFrame)
+ qda.fit
+
+```
+
+
+```{r}
+library(MASS)
+test <- read.csv("s:/ecg-members/Gliebe/Data/dftesttime1trial20200505SROnormFrame.csv")
+train <- read.csv("s:/ecg-members/Gliebe/Data/dftraintime1trial20200505SROnormFrame.csv")
+dftrainFrame <- train %>%
+  dplyr::select(-sample, -X)
+dftrainFrame$result <- as.character(dftrainFrame$result)
+dftrainFrame$result[dftrainFrame$result == "yes"] <- 1
+dftrainFrame$result[dftrainFrame$result == "no"] <- 2
+dftrainFrame$result <- as.numeric(dftrainFrame$result)
+#str(dftrainFrame)
+#summary(dftrainFrame)
+set.seed(4)
+qda.fitmaxLtrain = qda(result∼intercept+ns1+ns2+ns3+ns4 ,data=dftrainFrame)
+#saveRDS(qda.fitmaxLtrain, "../Data/RawNormalizedSRO/qdaModel.rds")
+predictedQDA <- predict(qda.fitmaxLtrain, dftrainFrame, type = "class")
+dftrainFrame$answerQDA <- predictedQDA$class
+#dfmaxLtest$rfmaxL <- as.factor(predictedrfmaxL)
+confusionMatrix(as.factor(dftrainFrame$answerQDA), as.factor(dftrainFrame$result))
+
+dftestFrame <- test %>%
+  dplyr::select(-sample, -X)
+dftestFrame$result <- as.character(dftestFrame$result)
+dftestFrame$result[dftestFrame$result == "yes"] <- 1
+dftestFrame$result[dftestFrame$result == "no"] <- 2
+dftestFrame$result <- as.numeric(dftestFrame$result)
+predictedQDA <- predict(qda.fitmaxLtrain, dftestFrame, type = "class")
+dftestFrame$answerQDA <- predictedQDA$class
+confusionMatrix(as.factor(dftestFrame$answerQDA), as.factor(dftestFrame$result))
+qda.fitmaxLtrain
+plot(qda.fitmaxLtrain)
+```
+
+
+log mod:
+```{r}
+test <- read.csv("s:/ecg-members/Gliebe/Data/dftesttime1trial20200505SROnormFrame.csv")
+train <- read.csv("s:/ecg-members/Gliebe/Data/dftraintime1trial20200505SROnormFrame.csv")
+dftrainFrame <- train %>%
+  dplyr::select(-sample, -X)
+dftrainFrame$result <- as.factor(dftrainFrame$result)
+dftestFrame <- test %>%
+  dplyr::select(-sample, -X)
+dftestFrame$result <- as.factor(dftestFrame$result)
+set.seed(3)
+logMod <- glm(result∼intercept+ns1+ns2+ns3+ns4 , data = dftrainFrame, family = binomial)
+#saveRDS(logMod, "../Data/RawNormalizedSRO/logModel.rds")
+glm.probs <- predict(logMod, type = "response")
+glm.pred = rep("no", 13)
+glm.pred[glm.probs > .5] = "yes"
+glm.pred <- as.factor(glm.pred)
+confusionMatrix(glm.pred, dftrainFrame$result)
+glm.pred
+glm.probs <- predict(logMod, dftestFrame)
+glm.pred = rep("no", 14)
+glm.pred[glm.probs > .5] = "yes"
+glm.pred <- as.factor(glm.pred)
+confusionMatrix(glm.pred, dftestFrame$result)
+logMod
+```
+
+
+
+```{r}
+library(leaps)
+dftrainFrame <- train %>%
+  dplyr::select(-sample, -X)
+dftrainFrame$result <- as.numeric(dftrainFrame$result)
+dftestFrame <- test %>%
+  dplyr::select(-sample, -X)
+dftestFrame$result <- as.factor(dftestFrame$result)
+set.seed(3)
+subMod <- regsubsets(result ~ . , data = dftrainFrame)
+summary(subMod)
+#saveRDS(logMod, "../Data/RawNormalizedSRO/logModel.rds")
+linMod <- lm(result ~ . , data = dftrainFrame)
+lm.probs <- predict(linMod, dftrainFrame)
+lm.pred = rep(1, 21156)
+lm.pred[lm.probs > 1.5] = 2
+confusionMatrix(as.factor(lm.pred), as.factor(dftrainFrame$result))
+
+```
+
+
+Let's do some eda to see what's happening
+
+```{r}
+#str(train)
+yes <- train %>%
+  dplyr::filter(result == "yes")
+ggplot(data = yes, aes(x = Xwidth, fill = as.factor(peakNum))) +
+  geom_histogram(position = "dodge")
+
+no <- train %>%
+  dplyr::filter(result == "no")
+ggplot(data = no, aes(x = Xwidth, fill = as.factor(peakNum))) +
+  geom_histogram(position = "dodge")
+
+```
+
+
+```{r}
+#str(train)
+yes <- train %>%
+  dplyr::filter(result == "yes")
+ggplot(data = yes, aes(x = widthsy, fill = as.factor(peakNum))) +
+  geom_histogram(position = "dodge")
+
+no <- train %>%
+  dplyr::filter(result == "no")
+ggplot(data = no, aes(x = widthsy, fill = as.factor(peakNum))) +
+  geom_histogram(position = "dodge")
+
+```
+
+
+```{r}
+library(klaR)
+partimat(as.factor(result) ~ ., data = dftrainFrame, method = "qda", plot.matrix = TRUE, col.correct='green', col.wrong='red')
+
+#str(dftrainFrame)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
